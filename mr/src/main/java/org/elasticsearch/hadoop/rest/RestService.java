@@ -448,6 +448,7 @@ public abstract class RestService implements Serializable {
                         .limit(settings.getScrollLimit())
                         .fields(SettingsUtils.determineSourceFields(settings))
                         .filters(QueryUtils.parseFilters(settings))
+                        .storedFields(settings.getReadStoredFieldInclude())
                         .shard(Integer.toString(partition.getShardId()))
                         .local(true)
                         .excludeSource(settings.getExcludeSource());

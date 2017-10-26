@@ -81,6 +81,7 @@ public class ScrollReader {
     private static class JsonResult {
 
         private JsonFragment doc = JsonFragment.EMPTY;
+        private JsonFragment additionalFields = JsonFragment.EMPTY;
 
         // typically only 2 fragments are needed = metadata prefix +
         private final List<JsonFragment> fragments = new ArrayList<JsonFragment>(2);
@@ -101,9 +102,22 @@ public class ScrollReader {
             return doc.isValid();
         }
 
+        void addAdditionalFields(JsonFragment fragment) {
+            if (fragment != null && fragment.isValid()) {
+                this.additionalFields = fragment;
+            }
+        }
+
+        boolean hasAdditionalFields() {
+            return additionalFields.isValid();
+        }
+
         int[] asCharPos() {
             int positions = fragments.size() << 1;
             if (doc.isValid()) {
+                positions += 2;
+            }
+            if (additionalFields.isValid()) {
                 positions += 2;
             }
 
@@ -113,6 +127,11 @@ public class ScrollReader {
             if (doc.isValid()) {
                 pos[index++] = doc.charStart;
                 pos[index++] = doc.charStop;
+            }
+
+            if (additionalFields.isValid()) {
+                pos[index++] = additionalFields.charStart;
+                pos[index++] = additionalFields.charStop;
             }
 
             for (JsonFragment fragment : fragments) {
@@ -293,7 +312,7 @@ public class ScrollReader {
         // convert the char positions into actual content
         if (returnRawJson) {
             // get all the longs
-            int[] pos = new int[results.size() * 6];
+            int[] pos = new int[results.size() * 8];
             int offset = 0;
 
             List<int[]> fragmentsPos = new ArrayList<int[]>(results.size());
@@ -350,6 +369,27 @@ public class ScrollReader {
                     bytesPositionIndex += 2;
 
                 }
+
+                // Add additional fields, if any, retrieved from stored_fields
+                if (jsonPointers.hasAdditionalFields()) {
+                    if (jsonPointers.hasDoc()) {
+                        doc.add(',');
+                    }
+
+                    rangeStart = bytesPosition[bytesPositionIndex];
+                    rangeStop = bytesPosition[bytesPositionIndex + 1];
+
+                    if (rangeStop - rangeStart < 0) {
+                        throw new IllegalArgumentException(String.format("Invalid position given=%s %s",rangeStart, rangeStop));
+                    }
+
+                    doc.add(input.bytes(), rangeStart, rangeStop - rangeStart);
+
+                    // consumed doc pointers
+                    currentFragmentIndex += 2;
+                    bytesPositionIndex += 2;
+                }
+
                 // followed by the metadata under designed field
                 if (readMetadata) {
                     if (jsonPointers.hasDoc()) {
@@ -425,7 +465,7 @@ public class ScrollReader {
                 if (t == Token.FIELD_NAME) {
                     if (!("fields".equals(name) || "_source".equals(name))) {
                         reader.beginField(absoluteName);
-                        value = read(absoluteName, parser.nextToken(), null);
+                        value = read(absoluteName, parser.nextToken(), null, null);
                         if (ID_FIELD.equals(name)) {
                             id = value;
                         }
@@ -467,10 +507,29 @@ public class ScrollReader {
                 parsingCallback.beginSource();
             }
 
-            data = read(StringUtils.EMPTY, t, null);
+            data = read(StringUtils.EMPTY, t, null, null);
 
             if (parsingCallback != null) {
                 parsingCallback.endSource();
+            }
+
+            // Handle the case when we are fetching stored fields along with _source
+            if (parser.currentToken() == Token.FIELD_NAME) {
+                String name = parser.currentName();
+
+                if ("fields".equals(name)) {
+                    // Move past the field name to the start token
+                    t = parser.nextToken();
+                    if (parsingCallback != null) {
+                        parsingCallback.beginSource();
+                    }
+
+                    data = read(StringUtils.EMPTY, t, null, data);
+
+                    if (parsingCallback != null) {
+                        parsingCallback.endSource();
+                    }
+                }
             }
 
             if (readMetadata) {
@@ -503,7 +562,7 @@ public class ScrollReader {
             if (readMetadata) {
                 // skip sort (useless and is an array which triggers the row mapping which does not apply)
                 if (!"sort".equals(name)) {
-                    reader.addToMap(data, reader.wrapString(name), read(absoluteName, parser.nextToken(), null));
+                    reader.addToMap(data, reader.wrapString(name), read(absoluteName, parser.nextToken(), null, null));
                 }
                 else {
                     parser.nextToken();
@@ -657,6 +716,35 @@ public class ScrollReader {
             }
         }
 
+        // Check if the response contains both a _source and field element
+        if ((t = parser.currentToken()) == Token.FIELD_NAME) {
+            String name = parser.currentName();
+            if("fields".equals(name)) {
+                // Move past the field name and start token
+                t = parser.nextToken();
+                t = parser.nextToken();
+                switch (t) {
+                    case FIELD_NAME:
+                        int charStart = parser.tokenCharOffset();
+                        // can't use skipChildren as we are within the object
+                        ParsingUtils.skipCurrentBlock(parser);
+                        // make sure to include the ending char
+                        int charStop = parser.tokenCharOffset();
+                        // move pass end of object
+                        t = parser.nextToken();
+                        snippet.addAdditionalFields(new JsonFragment(charStart, charStop));
+                        break;
+                    case END_OBJECT:
+                        // move pass end of object
+                        t = parser.nextToken();
+                        snippet.addDoc(JsonFragment.EMPTY);
+                        break;
+                    default:
+                        throw new EsHadoopIllegalArgumentException("unexpected token in _source: " + t);
+                }
+            }
+        }
+
         // should include , plus whatever whitespace there is
         int metadataSuffixStartCharPos = parser.tokenCharOffset();
         int metadataSuffixStopCharPos = -1;
@@ -694,14 +782,14 @@ public class ScrollReader {
         return hits;
     }
 
-    protected Object read(String fieldName, Token t, String fieldMapping) {
+    protected Object read(String fieldName, Token t, String fieldMapping, Object mapToUpdate) {
         if (t == Token.START_ARRAY) {
             return list(fieldName, fieldMapping);
         }
 
         // handle nested nodes first
         else if (t == Token.START_OBJECT) {
-            return map(fieldMapping);
+            return map(fieldMapping, mapToUpdate);
         }
         FieldType esType = mapping(fieldMapping);
 
@@ -743,7 +831,7 @@ public class ScrollReader {
         // create only one element since with fields, we always get arrays which create unneeded allocations
         List<Object> content = new ArrayList<Object>(1);
         for (; parser.currentToken() != Token.END_ARRAY;) {
-            content.add(read(fieldName, parser.currentToken(), fieldMapping));
+            content.add(read(fieldName, parser.currentToken(), fieldMapping, null));
         }
 
         // eliminate END_ARRAY
@@ -753,7 +841,7 @@ public class ScrollReader {
         return array;
     }
 
-    protected Object map(String fieldMapping) {
+    protected Object map(String fieldMapping, Object mapToUpdate) {
         Token t = parser.currentToken();
 
         if (t == null) {
@@ -775,7 +863,7 @@ public class ScrollReader {
                 }
             }
         }
-        Object map = reader.createMap();
+        Object map = mapToUpdate == null ? reader.createMap() : mapToUpdate;
 
         for (; parser.currentToken() != Token.END_OBJECT;) {
             String currentName = parser.currentName();
@@ -811,7 +899,7 @@ public class ScrollReader {
                 // Must point to field name
                 Object fieldName = reader.readValue(parser, currentName, FieldType.STRING);
                 // And then the value...
-                reader.addToMap(map, fieldName, read(absoluteName, parser.nextToken(), nodeMapping));
+                reader.addToMap(map, fieldName, read(absoluteName, parser.nextToken(), nodeMapping, null));
                 reader.endField(absoluteName);
             }
         }

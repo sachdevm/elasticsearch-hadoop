@@ -61,6 +61,7 @@ public class SearchRequestBuilder {
     private String types;
     private String shard;
     private String fields;
+    public String storedFields;
     private QueryBuilder query;
     private final List<QueryBuilder> filters = new ArrayList<QueryBuilder> ();
     private String routing;
@@ -125,6 +126,11 @@ public class SearchRequestBuilder {
     public SearchRequestBuilder fields(String fieldsCSV) {
         Assert.isFalse(this.excludeSource, "Fields can't be requested because _source section is excluded");
         this.fields = fieldsCSV;
+        return this;
+    }
+
+    public SearchRequestBuilder storedFields(String storedFieldsCSV) {
+        this.storedFields = storedFieldsCSV;
         return this;
     }
 
@@ -196,6 +202,11 @@ public class SearchRequestBuilder {
             uriParams.put("_source", HttpEncodingTools.concatenateAndUriEncode(StringUtils.tokenize(fields), StringUtils.DEFAULT_DELIMITER));
         } else if (excludeSource) {
             uriParams.put("_source", "false");
+        }
+
+        // set stored fields
+        if (StringUtils.hasText(storedFields)) {
+            uriParams.put("stored_fields", HttpEncodingTools.concatenateAndUriEncode(StringUtils.tokenize(storedFields), StringUtils.DEFAULT_DELIMITER));
         }
 
         // set shard preference

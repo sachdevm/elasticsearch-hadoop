@@ -214,6 +214,8 @@ public interface ConfigurationOptions {
 
     String ES_READ_SOURCE_FILTER = "es.read.source.filter";
 
+    String ES_READ_STORED_FIELD_INCLUDE = "es.read.stored.field.include";
+
     /** Metadata */
     String ES_READ_METADATA = "es.read.metadata";
     String ES_READ_METADATA_DEFAULT = "false";

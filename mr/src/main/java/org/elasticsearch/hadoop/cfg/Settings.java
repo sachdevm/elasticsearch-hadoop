@@ -379,6 +379,10 @@ public abstract class Settings {
         return getProperty(ES_READ_SOURCE_FILTER, StringUtils.EMPTY);
     }
 
+    public String getReadStoredFieldInclude() {
+        return getProperty(ES_READ_STORED_FIELD_INCLUDE, StringUtils.EMPTY);
+    }
+
     public TimeValue getHeartBeatLead() {
         return TimeValue.parseTimeValue(getProperty(ES_HEART_BEAT_LEAD, ES_HEART_BEAT_LEAD_DEFAULT));
     }
